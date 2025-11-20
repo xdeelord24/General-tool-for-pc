@@ -797,7 +797,6 @@ class PCHelperTools:
                             for line in result.stdout.split('\n'):
                                 if f':{port}' in line and 'LISTEN' in line:
                                     # Extract PID from output like "pid=1234"
-                                    import re
                                     match = re.search(r'pid=(\d+)', line)
                                     if match:
                                         pids.append(int(match.group(1)))
@@ -1701,7 +1700,8 @@ class PCHelperTools:
                 print("1. Ping a host")
                 print("2. Port scanner")
                 print("3. Network speed test")
-                print("4. Return to main menu")
+                print("4. Kill process on port")
+                print("5. Return to main menu")
                 sub_choice = input("Enter choice: ").strip()
                 
                 if sub_choice == '1':
@@ -1718,6 +1718,12 @@ class PCHelperTools:
                         print("❌ Invalid port numbers")
                 elif sub_choice == '3':
                     self.network_speed_test()
+                elif sub_choice == '4':
+                    try:
+                        port = int(input("Enter port number to kill: ").strip())
+                        self.kill_port(port)
+                    except ValueError:
+                        print("❌ Invalid port number")
                 
                 input("\nPress Enter to continue...")
                 self.clear_screen()
@@ -1933,6 +1939,7 @@ def main():
     parser.add_argument('--report', action='store_true', help='Create system report and exit')
     parser.add_argument('--ping', type=str, help='Ping a host and exit')
     parser.add_argument('--scan', type=str, help='Scan ports on a host and exit')
+    parser.add_argument('--kill-port', type=int, help='Kill process using a specific port and exit')
     
     args = parser.parse_args()
     tools = PCHelperTools()
@@ -1947,6 +1954,8 @@ def main():
         tools.ping_host(args.ping)
     elif args.scan:
         tools.network_scan(args.scan)
+    elif args.kill_port:
+        tools.kill_port(args.kill_port)
     else:
         tools.run()
 

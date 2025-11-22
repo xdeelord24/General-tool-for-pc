@@ -145,10 +145,12 @@ class PCHelperTools:
         except psutil.AccessDenied:
             print(f"❌ Access denied. Try running as administrator/root")
     
-    def network_scan(self, host="127.0.0.1", start_port=1, end_port=1000):
+    def network_scan(self, host="127.0.0.1", start_port=1, end_port=65535):
         """Scan for open ports on a host"""
         print(f"🌐 SCANNING PORTS ON {host}")
         print("=" * 50)
+        if end_port - start_port + 1 > 1000:
+            print(f"⚠️  Scanning {end_port - start_port + 1} ports - this may take a while...")
         
         open_ports = []
         
@@ -208,35 +210,93 @@ class PCHelperTools:
         print("=" * 50)
         
         temp_dirs = []
+        cache_dirs = []
+        
         if self.is_windows:
             temp_dirs = [
                 os.path.expandvars('%TEMP%'),
                 os.path.expandvars('%TMP%'),
                 os.path.expandvars('%WINDIR%\\Temp'),
-                os.path.expandvars('%LOCALAPPDATA%\\Temp')
+                os.path.expandvars('%LOCALAPPDATA%\\Temp'),
+                os.path.expandvars('%LOCALAPPDATA%\\Microsoft\\Windows\\INetCache'),
+                os.path.expandvars('%LOCALAPPDATA%\\Microsoft\\Windows\\Temporary Internet Files'),
+            ]
+            cache_dirs = [
+                os.path.expandvars('%LOCALAPPDATA%\\Microsoft\\Windows\\INetCache'),
+                os.path.expandvars('%APPDATA%\\Microsoft\\Windows\\Recent'),
             ]
         else:
             temp_dirs = ['/tmp', '/var/tmp']
+            cache_dirs = [
+                os.path.expanduser('~/.cache'),
+                os.path.expanduser('~/.thumbnails'),
+            ]
         
         total_freed = 0
+        files_deleted = 0
         
+        print("Cleaning temporary files...")
         for temp_dir in temp_dirs:
             if os.path.exists(temp_dir):
-                print(f"Cleaning: {temp_dir}")
+                print(f"\n📁 Cleaning: {temp_dir}")
+                dir_freed = 0
+                dir_files = 0
                 try:
                     for root, dirs, files in os.walk(temp_dir):
                         for file in files:
                             try:
                                 file_path = os.path.join(root, file)
-                                size = os.path.getsize(file_path)
-                                os.remove(file_path)
-                                total_freed += size
-                            except (OSError, PermissionError):
+                                # Skip files that are currently in use
+                                if os.path.isfile(file_path):
+                                    size = os.path.getsize(file_path)
+                                    os.remove(file_path)
+                                    total_freed += size
+                                    dir_freed += size
+                                    files_deleted += 1
+                                    dir_files += 1
+                            except (OSError, PermissionError, FileNotFoundError):
                                 pass
+                    if dir_files > 0:
+                        print(f"  ✅ Deleted {dir_files} files, freed {self.format_bytes(dir_freed)}")
+                    else:
+                        print(f"  ℹ️  No files to clean")
                 except PermissionError:
                     print(f"  ⚠️  Access denied: {temp_dir}")
+                except Exception as e:
+                    print(f"  ⚠️  Error cleaning {temp_dir}: {e}")
         
-        print(f"✅ Cleanup completed. Freed: {self.format_bytes(total_freed)}")
+        print("\nCleaning cache files...")
+        for cache_dir in cache_dirs:
+            if os.path.exists(cache_dir):
+                print(f"\n📁 Cleaning cache: {cache_dir}")
+                dir_freed = 0
+                dir_files = 0
+                try:
+                    for root, dirs, files in os.walk(cache_dir):
+                        for file in files:
+                            try:
+                                file_path = os.path.join(root, file)
+                                if os.path.isfile(file_path):
+                                    size = os.path.getsize(file_path)
+                                    os.remove(file_path)
+                                    total_freed += size
+                                    dir_freed += size
+                                    files_deleted += 1
+                                    dir_files += 1
+                            except (OSError, PermissionError, FileNotFoundError):
+                                pass
+                    if dir_files > 0:
+                        print(f"  ✅ Deleted {dir_files} cache files, freed {self.format_bytes(dir_freed)}")
+                    else:
+                        print(f"  ℹ️  No cache files to clean")
+                except PermissionError:
+                    print(f"  ⚠️  Access denied: {cache_dir}")
+                except Exception as e:
+                    print(f"  ⚠️  Error cleaning {cache_dir}: {e}")
+        
+        print(f"\n✅ Cleanup completed!")
+        print(f"  Total files deleted: {files_deleted}")
+        print(f"  Total space freed: {self.format_bytes(total_freed)}")
     
     def find_large_files(self, directory=".", min_size_mb=100):
         """Find large files in a directory"""
@@ -276,11 +336,27 @@ class PCHelperTools:
         print("=" * 50)
         
         issues = []
+        warnings = []
+        info = []
         
         # Check memory usage
         memory = psutil.virtual_memory()
         if memory.percent > 90:
             issues.append(f"⚠️  High memory usage: {memory.percent:.1f}%")
+        elif memory.percent > 75:
+            warnings.append(f"⚠️  Moderate memory usage: {memory.percent:.1f}%")
+        else:
+            info.append(f"✅ Memory usage: {memory.percent:.1f}%")
+        
+        # Check swap usage
+        try:
+            swap = psutil.swap_memory()
+            if swap.percent > 80:
+                warnings.append(f"⚠️  High swap usage: {swap.percent:.1f}%")
+            else:
+                info.append(f"✅ Swap usage: {swap.percent:.1f}%")
+        except Exception:
+            pass
         
         # Check disk usage
         for partition in psutil.disk_partitions():
@@ -289,6 +365,10 @@ class PCHelperTools:
                 usage_percent = (usage.used / usage.total) * 100
                 if usage_percent > 90:
                     issues.append(f"⚠️  High disk usage on {partition.device}: {usage_percent:.1f}%")
+                elif usage_percent > 80:
+                    warnings.append(f"⚠️  Moderate disk usage on {partition.device}: {usage_percent:.1f}%")
+                else:
+                    info.append(f"✅ Disk usage on {partition.device}: {usage_percent:.1f}%")
             except PermissionError:
                 pass
         
@@ -296,6 +376,25 @@ class PCHelperTools:
         cpu_percent = psutil.cpu_percent(interval=1)
         if cpu_percent > 90:
             issues.append(f"⚠️  High CPU usage: {cpu_percent:.1f}%")
+        elif cpu_percent > 75:
+            warnings.append(f"⚠️  Moderate CPU usage: {cpu_percent:.1f}%")
+        else:
+            info.append(f"✅ CPU usage: {cpu_percent:.1f}%")
+        
+        # Check CPU temperature if available
+        try:
+            if hasattr(psutil, 'sensors_temperatures'):
+                temps = psutil.sensors_temperatures()
+                if temps:
+                    for name, entries in temps.items():
+                        for entry in entries:
+                            if entry.current and entry.critical:
+                                if entry.current > entry.critical:
+                                    issues.append(f"⚠️  Critical temperature on {name}: {entry.current}°C")
+                                elif entry.current > entry.high:
+                                    warnings.append(f"⚠️  High temperature on {name}: {entry.current}°C")
+        except Exception:
+            pass
         
         # Check for high memory processes
         high_memory_processes = []
@@ -307,14 +406,48 @@ class PCHelperTools:
                 pass
         
         if high_memory_processes:
-            issues.append(f"⚠️  {len(high_memory_processes)} processes using >10% memory")
+            warnings.append(f"⚠️  {len(high_memory_processes)} processes using >10% memory")
+            # Show top 3 memory consumers
+            high_memory_processes.sort(key=lambda x: x['memory_percent'] or 0, reverse=True)
+            for proc in high_memory_processes[:3]:
+                info.append(f"  • {proc['name']}: {proc['memory_percent']:.1f}%")
+        
+        # Check disk I/O wait (if available)
+        try:
+            disk_io = psutil.disk_io_counters()
+            if disk_io:
+                # High I/O can indicate disk issues
+                info.append(f"✅ Disk I/O: Read {self.format_bytes(disk_io.read_bytes)}, Write {self.format_bytes(disk_io.write_bytes)}")
+        except Exception:
+            pass
+        
+        # Check network connectivity
+        try:
+            socket.create_connection(("8.8.8.8", 53), timeout=3)
+            info.append("✅ Internet connectivity: OK")
+        except OSError:
+            warnings.append("⚠️  No internet connectivity detected")
+        
+        # Display results
+        if info:
+            print("\n📊 System Status:")
+            for item in info:
+                print(f"  {item}")
+        
+        if warnings:
+            print("\n⚠️  Warnings:")
+            for warning in warnings:
+                print(f"  {warning}")
         
         if issues:
-            print("Issues found:")
+            print("\n❌ Critical Issues:")
             for issue in issues:
                 print(f"  {issue}")
-        else:
-            print("✅ System health check passed - no major issues found")
+        
+        if not issues and not warnings:
+            print("\n✅ System health check passed - no major issues found")
+        elif not issues:
+            print("\n✅ No critical issues found, but some warnings detected")
     
     def create_system_report(self):
         """Create a comprehensive system report"""
@@ -1019,6 +1152,191 @@ class PCHelperTools:
         print(f"  Total errors: {error_count}")
         print(f"  Total warnings: {warning_count}")
     
+    def find_duplicate_files(self, directory=".", min_size_kb=1):
+        """Find duplicate files in a directory"""
+        print("🔍 DUPLICATE FILE FINDER")
+        print("=" * 50)
+        
+        if not os.path.exists(directory):
+            print(f"❌ Directory not found: {directory}")
+            return
+        
+        min_size_bytes = min_size_kb * 1024
+        file_hashes = {}
+        duplicates = []
+        total_files = 0
+        processed_files = 0
+        
+        print(f"Scanning directory: {directory}")
+        print(f"Minimum file size: {min_size_kb} KB")
+        print("This may take a while for large directories...\n")
+        
+        try:
+            # First pass: collect file sizes (quick check)
+            size_groups = {}
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    try:
+                        file_path = os.path.join(root, file)
+                        size = os.path.getsize(file_path)
+                        if size >= min_size_bytes:
+                            total_files += 1
+                            if size not in size_groups:
+                                size_groups[size] = []
+                            size_groups[size].append(file_path)
+                    except (OSError, PermissionError):
+                        pass
+            
+            print(f"Found {total_files} files to check")
+            print("Computing hashes for potential duplicates...\n")
+            
+            # Second pass: compute hashes only for files with same size
+            for size, file_paths in size_groups.items():
+                if len(file_paths) > 1:  # Only check if multiple files have same size
+                    for file_path in file_paths:
+                        try:
+                            # Compute hash in chunks for large files
+                            file_hash = hashlib.md5()
+                            with open(file_path, 'rb') as f:
+                                while True:
+                                    chunk = f.read(8192)
+                                    if not chunk:
+                                        break
+                                    file_hash.update(chunk)
+                            
+                            hash_value = file_hash.hexdigest()
+                            processed_files += 1
+                            
+                            if hash_value not in file_hashes:
+                                file_hashes[hash_value] = []
+                            file_hashes[hash_value].append(file_path)
+                            
+                            # Progress indicator
+                            if processed_files % 100 == 0:
+                                print(f"  Processed {processed_files}/{total_files} files...", end='\r')
+                                
+                        except (OSError, PermissionError, IOError):
+                            pass
+            
+            print(f"\n  Processed {processed_files} files")
+            print("\nAnalyzing results...\n")
+            
+            # Find duplicates
+            for hash_value, file_paths in file_hashes.items():
+                if len(file_paths) > 1:
+                    duplicates.append({
+                        'hash': hash_value,
+                        'files': file_paths,
+                        'size': os.path.getsize(file_paths[0]) if file_paths else 0
+                    })
+            
+            # Display results
+            if duplicates:
+                total_duplicate_size = 0
+                print(f"✅ Found {len(duplicates)} groups of duplicate files:\n")
+                
+                for i, dup_group in enumerate(duplicates, 1):
+                    size = dup_group['size']
+                    files = dup_group['files']
+                    total_duplicate_size += size * (len(files) - 1)  # Space that could be freed
+                    
+                    print(f"Group {i} ({len(files)} duplicates, {self.format_bytes(size)} each):")
+                    for file_path in files:
+                        print(f"  • {file_path}")
+                    print()
+                
+                print(f"📊 Summary:")
+                print(f"  Duplicate groups: {len(duplicates)}")
+                print(f"  Total duplicate files: {sum(len(d['files']) for d in duplicates)}")
+                print(f"  Space that could be freed: {self.format_bytes(total_duplicate_size)}")
+                print(f"\n💡 You can safely delete duplicate files to free up space")
+            else:
+                print("✅ No duplicate files found")
+                
+        except PermissionError:
+            print(f"❌ Access denied to directory: {directory}")
+        except Exception as e:
+            print(f"❌ Error finding duplicates: {e}")
+    
+    def flush_dns_cache(self):
+        """Flush DNS cache to resolve network issues"""
+        print("🌐 DNS CACHE FLUSH")
+        print("=" * 50)
+        
+        try:
+            if self.is_windows:
+                if not self.is_admin:
+                    print("⚠️  Administrator privileges required for DNS flush")
+                    print("💡 Please run this script as Administrator")
+                    return
+                
+                print("Flushing DNS cache...")
+                result = subprocess.run(['ipconfig', '/flushdns'], 
+                                      capture_output=True, text=True, timeout=30)
+                
+                if result.returncode == 0:
+                    print("✅ DNS cache flushed successfully")
+                    print(result.stdout)
+                else:
+                    print("❌ Failed to flush DNS cache")
+                    print(result.stderr)
+                    
+            else:
+                # Linux - try multiple methods
+                print("Flushing DNS cache...")
+                
+                # Method 1: systemd-resolved
+                try:
+                    result = subprocess.run(['sudo', 'systemd-resolve', '--flush-caches'], 
+                                          capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        print("✅ DNS cache flushed using systemd-resolve")
+                        return
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    pass
+                
+                # Method 2: systemd-resolved (alternative command)
+                try:
+                    result = subprocess.run(['sudo', 'resolvectl', 'flush-caches'], 
+                                          capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        print("✅ DNS cache flushed using resolvectl")
+                        return
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    pass
+                
+                # Method 3: nscd
+                try:
+                    result = subprocess.run(['sudo', 'service', 'nscd', 'restart'], 
+                                          capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        print("✅ DNS cache flushed by restarting nscd")
+                        return
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    pass
+                
+                # Method 4: dnsmasq
+                try:
+                    result = subprocess.run(['sudo', 'service', 'dnsmasq', 'restart'], 
+                                          capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        print("✅ DNS cache flushed by restarting dnsmasq")
+                        return
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    pass
+                
+                print("⚠️  Could not automatically flush DNS cache")
+                print("💡 Manual methods:")
+                print("  - sudo systemd-resolve --flush-caches")
+                print("  - sudo resolvectl flush-caches")
+                print("  - sudo service nscd restart")
+                print("  - sudo service dnsmasq restart")
+                
+        except subprocess.TimeoutExpired:
+            print("⏰ DNS flush operation timed out")
+        except Exception as e:
+            print(f"❌ Error flushing DNS cache: {e}")
+    
     def startup_manager(self):
         """Manage system startup programs"""
         print("🚀 STARTUP MANAGER")
@@ -1029,19 +1347,75 @@ class PCHelperTools:
             startup_locations = [
                 os.path.expandvars('%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup'),
                 os.path.expandvars('%ALLUSERSPROFILE%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup'),
-                r'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run',
-                r'HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run'
             ]
             
             print("Windows Startup Programs:")
+            print("\n📁 Startup Folders:")
             for location in startup_locations:
                 if os.path.exists(location):
-                    print(f"\n📁 {location}")
+                    print(f"\n  {location}")
                     try:
-                        for item in os.listdir(location):
-                            print(f"  • {item}")
+                        items = os.listdir(location)
+                        if items:
+                            for item in items:
+                                item_path = os.path.join(location, item)
+                                try:
+                                    size = os.path.getsize(item_path) if os.path.isfile(item_path) else 0
+                                    print(f"    • {item} ({self.format_bytes(size)})")
+                                except:
+                                    print(f"    • {item}")
+                        else:
+                            print("    (empty)")
                     except PermissionError:
-                        print("  ⚠️  Access denied")
+                        print("    ⚠️  Access denied")
+            
+            # Try to read registry startup entries
+            print("\n📋 Registry Startup Entries:")
+            try:
+                import winreg
+                
+                # HKEY_CURRENT_USER
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, 
+                                       r"Software\Microsoft\Windows\CurrentVersion\Run")
+                    print("\n  HKEY_CURRENT_USER\\...\\Run:")
+                    i = 0
+                    while True:
+                        try:
+                            name, value, _ = winreg.EnumValue(key, i)
+                            print(f"    • {name}: {value}")
+                            i += 1
+                        except OSError:
+                            break
+                    winreg.CloseKey(key)
+                except Exception as e:
+                    print(f"    ⚠️  Could not read HKEY_CURRENT_USER: {e}")
+                
+                # HKEY_LOCAL_MACHINE (requires admin)
+                if self.is_admin:
+                    try:
+                        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 
+                                           r"Software\Microsoft\Windows\CurrentVersion\Run")
+                        print("\n  HKEY_LOCAL_MACHINE\\...\\Run:")
+                        i = 0
+                        while True:
+                            try:
+                                name, value, _ = winreg.EnumValue(key, i)
+                                print(f"    • {name}: {value}")
+                                i += 1
+                            except OSError:
+                                break
+                        winreg.CloseKey(key)
+                    except Exception as e:
+                        print(f"    ⚠️  Could not read HKEY_LOCAL_MACHINE: {e}")
+                else:
+                    print("\n  HKEY_LOCAL_MACHINE\\...\\Run:")
+                    print("    ⚠️  Administrator privileges required")
+                    print("    💡 Run as Administrator to view system-wide startup programs")
+            except ImportError:
+                print("    ⚠️  winreg module not available")
+            except Exception as e:
+                print(f"    ⚠️  Error reading registry: {e}")
         else:
             # Linux startup locations
             startup_locations = [
@@ -1056,11 +1430,32 @@ class PCHelperTools:
                 if os.path.exists(location):
                     print(f"\n📁 {location}")
                     try:
-                        for item in os.listdir(location):
-                            if item.endswith(('.service', '.desktop')):
-                                print(f"  • {item}")
+                        items = os.listdir(location)
+                        service_items = [item for item in items if item.endswith(('.service', '.desktop'))]
+                        if service_items:
+                            for item in service_items:
+                                item_path = os.path.join(location, item)
+                                try:
+                                    size = os.path.getsize(item_path) if os.path.isfile(item_path) else 0
+                                    print(f"  • {item} ({self.format_bytes(size)})")
+                                except:
+                                    print(f"  • {item}")
+                        else:
+                            print("  (no startup items found)")
                     except PermissionError:
                         print("  ⚠️  Access denied")
+            
+            # Check systemd user services
+            try:
+                user_services = os.path.expanduser('~/.config/systemd/user')
+                if os.path.exists(user_services):
+                    print(f"\n📁 {user_services}")
+                    items = [f for f in os.listdir(user_services) if f.endswith('.service')]
+                    if items:
+                        for item in items:
+                            print(f"  • {item}")
+            except Exception:
+                pass
     
     def hardware_monitor(self):
         """Monitor hardware sensors (temperature, fan speed)"""
@@ -1635,7 +2030,9 @@ class PCHelperTools:
 ║ 13. Log Analyzer                                             ║
 ║ 14. System Repair Tools                                      ║
 ║ 15. Create System Report                                     ║
-║ 16. Exit                                                     ║
+║ 16. Find Duplicate Files                                     ║
+║ 17. Flush DNS Cache                                          ║
+║ 18. Exit                                                     ║
 ╚══════════════════════════════════════════════════════════════╝
         """
         print(menu)
@@ -1647,7 +2044,7 @@ class PCHelperTools:
         
         while True:
             self.show_menu()
-            choice = input("\nEnter your choice (1-16): ").strip()
+            choice = input("\nEnter your choice (1-18): ").strip()
             
             if choice == '1':
                 self.clear_screen()
@@ -1701,7 +2098,9 @@ class PCHelperTools:
                 print("2. Port scanner")
                 print("3. Network speed test")
                 print("4. Kill process on port")
-                print("5. Return to main menu")
+                print("5. Flush DNS cache")
+                print("6. List listening ports")
+                print("7. Return to main menu")
                 sub_choice = input("Enter choice: ").strip()
                 
                 if sub_choice == '1':
@@ -1712,7 +2111,7 @@ class PCHelperTools:
                     host = input("Enter host to scan (default: 127.0.0.1): ").strip() or "127.0.0.1"
                     try:
                         start_port = int(input("Start port (default: 1): ") or "1")
-                        end_port = int(input("End port (default: 1000): ") or "1000")
+                        end_port = int(input("End port (default: 65535 - all ports): ") or "65535")
                         self.network_scan(host, start_port, end_port)
                     except ValueError:
                         print("❌ Invalid port numbers")
@@ -1724,6 +2123,10 @@ class PCHelperTools:
                         self.kill_port(port)
                     except ValueError:
                         print("❌ Invalid port number")
+                elif sub_choice == '5':
+                    self.flush_dns_cache()
+                elif sub_choice == '6':
+                    self.list_listening_ports()
                 
                 input("\nPress Enter to continue...")
                 self.clear_screen()
@@ -1923,6 +2326,23 @@ class PCHelperTools:
                 self.clear_screen()
             
             elif choice == '16':
+                self.clear_screen()
+                directory = input("Enter directory to scan (default: current): ").strip() or "."
+                try:
+                    min_size = int(input("Minimum file size in KB (default: 1): ") or "1")
+                    self.find_duplicate_files(directory, min_size)
+                except ValueError:
+                    print("❌ Invalid size")
+                input("\nPress Enter to continue...")
+                self.clear_screen()
+            
+            elif choice == '17':
+                self.clear_screen()
+                self.flush_dns_cache()
+                input("\nPress Enter to continue...")
+                self.clear_screen()
+            
+            elif choice == '18':
                 print("\n👋 Goodbye!")
                 break
             
